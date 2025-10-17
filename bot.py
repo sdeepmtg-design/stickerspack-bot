@@ -1,30 +1,25 @@
 import os
-import logging
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+import telebot
 
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+bot = telebot.TeleBot(TOKEN)
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text('🚀 Бот запущен! Работает!')
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "🎉 Бот запущен и работает! Отправь мне фото для стикера")
 
-def echo(update: Update, context: CallbackContext):
-    update.message.reply_text(f'Вы сказали: {update.message.text}')
+@bot.message_handler(commands=['test'])
+def send_test(message):
+    bot.reply_to(message, "✅ Тест пройден! Бот отвечает!")
 
-def main():
-    updater = Updater(TOKEN)
-    dispatcher = updater.dispatcher
-    
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
-    
-    updater.start_polling()
-    updater.idle()
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    bot.reply_to(message, "📸 Фото получено! Функция стикеров скоро будет добавлена.")
+
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    bot.reply_to(message, f"Вы сказали: {message.text}")
 
 if __name__ == '__main__':
-    main()
+    print("🚀 Бот запускается...")
+    bot.infinity_polling()
