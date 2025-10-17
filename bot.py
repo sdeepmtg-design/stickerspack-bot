@@ -1,12 +1,12 @@
 import os
 import io
 import logging
+import requests
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from rembg import remove
-from PIL import Image, ImageFilter, ImageEnhance
+from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -28,9 +28,9 @@ class StickerStates(StatesGroup):
 def get_style_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton("⚪ Просто без фона"), KeyboardButton("🎨 Мультяшный")],
-            [KeyboardButton("🌈 Яркий контур"), KeyboardButton("👾 Пиксель-арт")],
-            [KeyboardButton("📐 Геометрический"), KeyboardButton("🎯 Ч/Б контур")]
+            [KeyboardButton("🎨 Мультяшный"), KeyboardButton("👾 Пиксель-арт")],
+            [KeyboardButton("🌈 Яркий контур"), KeyboardButton("📐 Геометрический")],
+            [KeyboardButton("🎯 Ч/Б контур"), KeyboardButton("🔥 Винтажный")]
         ],
         resize_keyboard=True
     )
@@ -51,26 +51,26 @@ async def help_command(message: Message):
         "2. Отправь фото или картинку\n"
         "3. Получи готовый стикер!\n\n"
         "Доступные стили:\n"
-        "⚪ Просто без фона - убирает фон\n"
         "🎨 Мультяшный - делает изображение как мультфильм\n"
-        "🌈 Яркий контур - добавляет яркие контуры\n"
         "👾 Пиксель-арт - превращает в пиксельную графику\n"
+        "🌈 Яркий контур - добавляет яркие контуры\n"
         "📐 Геометрический - упрощает до геометрических форм\n"
-        "🎯 Ч/Б контур - создает черно-белый контурный рисунок"
+        "🎯 Ч/Б контур - создает черно-белый контурный рисунок\n"
+        "🔥 Винтажный - добавляет старинный эффект"
     )
 
 @dp.message_handler(lambda message: message.text in [
-    "⚪ Просто без фона", "🎨 Мультяшный", "🌈 Яркий контур", 
-    "👾 Пиксель-арт", "📐 Геометрический", "🎯 Ч/Б контур"
+    "🎨 Мультяшный", "🌈 Яркий контур", "👾 Пиксель-арт", 
+    "📐 Геометрический", "🎯 Ч/Б контур", "🔥 Винтажный"
 ])
 async def choose_style(message: Message, state: FSMContext):
     style_map = {
-        "⚪ Просто без фона": "no_bg",
         "🎨 Мультяшный": "cartoon", 
         "🌈 Яркий контур": "outline",
         "👾 Пиксель-арт": "pixel",
         "📐 Геометрический": "geometric",
-        "🎯 Ч/Б контур": "bw_sketch"
+        "🎯 Ч/Б контур": "bw_sketch",
+        "🔥 Винтажный": "vintage"
     }
     
     await state.update_data(style=style_map[message.text])
@@ -81,7 +81,7 @@ async def choose_style(message: Message, state: FSMContext):
 async def process_photo_with_style(message: Message, state: FSMContext):
     try:
         user_data = await state.get_data()
-        selected_style = user_data.get('style', 'no_bg')
+        selected_style = user_data.get('style', 'cartoon')
         
         await message.answer("🔄 Обрабатываю изображение...")
         
@@ -94,9 +94,7 @@ async def process_photo_with_style(message: Message, state: FSMContext):
         input_image = Image.open(io.BytesIO(downloaded_file.getvalue())).convert('RGB')
         
         # Применяем выбранный стиль
-        if selected_style == 'no_bg':
-            output_image = apply_no_background(input_image)
-        elif selected_style == 'cartoon':
+        if selected_style == 'cartoon':
             output_image = apply_cartoon_style(input_image)
         elif selected_style == 'outline':
             output_image = apply_outline_style(input_image)
@@ -106,9 +104,19 @@ async def process_photo_with_style(message: Message, state: FSMContext):
             output_image = apply_geometric_style(input_image)
         elif selected_style == 'bw_sketch':
             output_image = apply_bw_sketch_style(input_image)
+        elif selected_style == 'vintage':
+            output_image = apply_vintage_style(input_image)
         
         # Конвертируем в PNG для стикера
         output_bytes = io.BytesIO()
+        
+        # Создаем изображение с прозрачным фоном
+        if output_image.mode != 'RGBA':
+            output_image = output_image.convert('RGBA')
+            
+        # Упрощаем фон для лучшего результата
+        output_image = make_background_transparent(output_image)
+        
         output_image.save(output_bytes, format='PNG', optimize=True)
         output_bytes.seek(0)
         
@@ -130,69 +138,76 @@ async def process_photo_without_style(message: Message):
     await message.answer("⚠️ Сначала выбери стиль из меню ниже!", reply_markup=get_style_keyboard())
 
 # Функции обработки стилей
-def apply_no_background(image):
-    """Просто удаляет фон"""
-    return remove(image)
+def make_background_transparent(image):
+    """Упрощенное удаление фона - делает белый и светлые цвета прозрачными"""
+    if image.mode != 'RGBA':
+        image = image.convert('RGBA')
+    
+    datas = image.getdata()
+    new_data = []
+    
+    for item in datas:
+        # Делаем белый и светлые цвета прозрачными
+        if item[0] > 200 and item[1] > 200 and item[2] > 200:
+            new_data.append((255, 255, 255, 0))
+        else:
+            new_data.append(item)
+    
+    image.putdata(new_data)
+    return image
 
 def apply_cartoon_style(image):
     """Мультяшный стиль"""
-    # Сначала удаляем фон
-    no_bg = remove(image)
-    
     # Увеличиваем насыщенность
-    enhancer = ImageEnhance.Color(no_bg)
-    saturated = enhancer.enhance(1.3)
+    enhancer = ImageEnhance.Color(image)
+    saturated = enhancer.enhance(1.5)
     
-    # Добавляем легкое размытие для мультяшного эффекта
+    # Добавляем легкое размытие
     cartoon = saturated.filter(ImageFilter.SMOOTH_MORE)
     
-    return cartoon
+    # Увеличиваем контраст
+    contrast_enhancer = ImageEnhance.Contrast(cartoon)
+    result = contrast_enhancer.enhance(1.2)
+    
+    return result
 
 def apply_outline_style(image):
     """Стиль с яркими контурами"""
-    no_bg = remove(image)
-    
     # Находим края
-    edges = no_bg.filter(ImageFilter.FIND_EDGES)
+    edges = image.filter(ImageFilter.FIND_EDGES)
     
     # Увеличиваем контраст краев
     enhancer = ImageEnhance.Contrast(edges)
     strong_edges = enhancer.enhance(3.0)
     
     # Накладываем края на оригинал
-    result = Image.blend(no_bg, strong_edges, 0.3)
+    result = Image.blend(image, strong_edges, 0.2)
     
     return result
 
 def apply_pixel_style(image):
     """Пиксель-арт стиль"""
-    no_bg = remove(image)
-    
     # Уменьшаем разрешение
-    small_size = (128, 128)
-    pixelated = no_bg.resize(small_size, Image.NEAREST)
+    small_size = (64, 64)
+    pixelated = image.resize(small_size, Image.NEAREST)
     
     # Возвращаем к исходному размеру
-    result = pixelated.resize(no_bg.size, Image.NEAREST)
+    result = pixelated.resize(image.size, Image.NEAREST)
     
     return result
 
 def apply_geometric_style(image):
     """Геометрический стиль"""
-    no_bg = remove(image)
-    
     # Упрощаем изображение через постернизацию
-    simplified = no_bg.convert('P', palette=Image.ADAPTIVE, colors=8)
+    simplified = image.convert('P', palette=Image.ADAPTIVE, colors=6)
     result = simplified.convert('RGB')
     
     return result
 
 def apply_bw_sketch_style(image):
     """Черно-белый контурный стиль"""
-    no_bg = remove(image)
-    
     # Конвертируем в градации серого
-    gray = no_bg.convert('L')
+    gray = image.convert('L')
     
     # Находим края
     edges = gray.filter(ImageFilter.FIND_EDGES)
@@ -201,6 +216,26 @@ def apply_bw_sketch_style(image):
     inverted = Image.eval(edges, lambda x: 255 - x)
     
     return inverted.convert('RGB')
+
+def apply_vintage_style(image):
+    """Винтажный стиль"""
+    # Добавляем сепию
+    sepia = image.convert('RGB')
+    width, height = sepia.size
+    pixels = sepia.load()
+    
+    for py in range(height):
+        for px in range(width):
+            r, g, b = sepia.getpixel((px, py))
+            tr = int(0.393 * r + 0.769 * g + 0.189 * b)
+            tg = int(0.349 * r + 0.686 * g + 0.168 * b)
+            tb = int(0.272 * r + 0.534 * g + 0.131 * b)
+            pixels[px, py] = (min(255, tr), min(255, tg), min(255, tb))
+    
+    # Добавляем шум
+    result = sepia.filter(ImageFilter.GaussianBlur(0.5))
+    
+    return result
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
