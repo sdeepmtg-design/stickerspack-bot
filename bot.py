@@ -1,8 +1,10 @@
 import os
 import io
 import logging
+import requests
 from flask import Flask, request
 import telebot
+from telebot import types
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -19,73 +21,79 @@ try:
     logger.info("✅ Pillow is available")
 except ImportError:
     PILLOW_AVAILABLE = False
-    logger.warning("❌ Pillow not available - using basic functionality")
+    logger.warning("❌ Pillow not available")
 
-def create_sticker_from_photo(photo_data, style='simple'):
-    """Создает настоящий стикер из фото"""
+# Хранилище для создания стикерпаков
+user_stickerpacks = {}
+
+def remove_background_simple(image):
+    """Упрощенное удаление фона - делает белый/светлый фон прозрачным"""
+    if image.mode != 'RGBA':
+        image = image.convert('RGBA')
+    
+    datas = image.getdata()
+    new_data = []
+    
+    for item in datas:
+        # Делаем белый и светлые цвета прозрачными
+        if item[0] > 200 and item[1] > 200 and item[2] > 200:
+            new_data.append((255, 255, 255, 0))  # полностью прозрачный
+        else:
+            new_data.append(item)
+    
+    image.putdata(new_data)
+    return image
+
+def create_sticker_image(photo_data):
+    """Создает изображение для стикера с прозрачным фоном"""
     if not PILLOW_AVAILABLE:
         raise Exception("Pillow not installed")
     
     # Открываем изображение
     image = Image.open(io.BytesIO(photo_data)).convert('RGBA')
     
-    # Создаем квадратное изображение 512x512 (стандарт для стикеров)
+    # Удаляем фон (упрощенная версия)
+    image = remove_background_simple(image)
+    
+    # Создаем квадратное изображение 512x512
     target_size = 512
     
-    # 1. Определяем область для обрезки
+    # Создаем новое изображение с прозрачным фоном
+    sticker = Image.new('RGBA', (target_size, target_size), (255, 255, 255, 0))
+    
+    # Масштабируем оригинальное изображение чтобы вписать в 512x512
     width, height = image.size
+    scale = min(target_size / width, target_size / height) * 0.8  # оставляем отступы
     
-    # Обрезаем до квадрата по центру
-    if width > height:
-        # Горизонтальное фото - обрезаем по высоте
-        left = (width - height) // 2
-        top = 0
-        right = left + height
-        bottom = height
-    else:
-        # Вертикальное фото - обрезаем по ширине
-        left = 0
-        top = (height - width) // 2
-        right = width
-        bottom = top + width
+    new_width = int(width * scale)
+    new_height = int(height * scale)
     
-    # Обрезаем до квадрата
-    cropped = image.crop((left, top, right, bottom))
+    resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
     
-    # Масштабируем до 512x512
-    sticker = cropped.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    # Позиционируем по центру
+    x = (target_size - new_width) // 2
+    y = (target_size - new_height) // 2
     
-    # Применяем стиль
-    if style == 'cartoon':
-        # Упрощенный мультяшный эффект
-        enhancer = ImageEnhance.Color(sticker)
-        sticker = enhancer.enhance(1.3)
-        sticker = sticker.filter(ImageFilter.SMOOTH_MORE)
-    elif style == 'outline':
-        # Эффект контуров
-        edges = sticker.filter(ImageFilter.FIND_EDGES)
-        sticker = Image.blend(sticker, edges, 0.1)
+    # Накладываем на прозрачный фон
+    sticker.paste(resized_image, (x, y), resized_image)
     
-    # Сохраняем как PNG с прозрачностью
-    output = io.BytesIO()
-    sticker.save(output, format='PNG', optimize=True)
-    output.seek(0)
-    
-    return output
+    return sticker
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(telebot.types.KeyboardButton('📸 Создать стикер'))
-    markup.add(telebot.types.KeyboardButton('ℹ️ О боте'))
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton('📸 Создать стикер'))
+    markup.add(types.KeyboardButton('📚 Мой стикерпак'))
+    markup.add(types.KeyboardButton('ℹ️ Помощь'))
     
     bot.reply_to(message,
         "🎨 *Бот для создания стикеров*\n\n"
-        "Отправь мне фото и я превращу его в настоящий стикер!\n"
-        "• Прозрачный фон\n"  
-        "• Квадратный формат 512x512\n"
-        "• Готово для Telegram\n\n"
-        "Нажми *Создать стикер* и отправь фото!",
+        "Я помогу тебе создать собственный стикерпак!\n\n"
+        "✨ *Что можно сделать:*\n"
+        "• Создать стикер из фото\n"
+        "• Добавить в свой стикерпак\n"
+        "• Поделиться с друзьями\n\n"
+        "Начни с кнопки *Создать стикер*!",
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -93,67 +101,92 @@ def start(message):
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
     bot.reply_to(message,
-        "🤖 *Как создать стикер:*\n"
+        "🤖 *Как создать стикерпак:*\n\n"
         "1. Нажми *Создать стикер*\n"
-        "2. Отправь любое фото\n"
-        "3. Получи готовый PNG-стикер\n\n"
-        "📝 *Что делает бот:*\n"
-        "• Обрезает фото до квадрата\n"
-        "• Масштабирует до 512x512 пикселей\n"
-        "• Сохраняет с прозрачным фоном\n"
-        "• Оптимизирует для Telegram\n\n"
-        "Просто отправь фото и попробуй! 📷",
+        "2. Отправь фото с четким объектом\n"
+        "3. Получи стикер с прозрачным фоном\n"
+        "4. Используй файл для создания стикерпака\n\n"
+        "📝 *Советы для фото:*\n"
+        "• Объект на светлом фоне\n"
+        "• Хорошее освещение\n"
+        "• Четкие контуры\n"
+        "• Объект в центре кадра",
         parse_mode='Markdown'
     )
+
+@bot.message_handler(commands=['createsticker'])
+def create_sticker_cmd(message):
+    bot.reply_to(message, "Отправь мне фото для создания стикера! 📷")
 
 @bot.message_handler(func=lambda message: message.text == '📸 Создать стикер')
 def make_sticker(message):
     bot.reply_to(message, 
-        "Отправь мне фото для создания стикера!\n\n"
-        "📝 *Совет:*\n"
-        "• Выбери фото с четким объектом\n"  
-        "• Лучше без сложного фона\n"
-        "• Объект должен быть в центре",
+        "📸 *Отправь фото для стикера*\n\n"
+        "Лучше всего подойдут:\n"
+        "• Фото на белом фоне\n"
+        "• Селфи с хорошим светом\n"  
+        "• Изображения предметов\n"
+        "• Картинки с четкими краями",
         parse_mode='Markdown'
     )
 
-@bot.message_handler(func=lambda message: message.text == 'ℹ️ О боте')
-def about(message):
+@bot.message_handler(func=lambda message: message.text == '📚 Мой стикерпак')
+def my_stickerpack(message):
+    bot.reply_to(message,
+        "📚 *Создание стикерпака*\n\n"
+        "Чтобы создать стикерпак в Telegram:\n\n"
+        "1. Нажми *Создать стикер*\n"
+        "2. Отправь фото\n"
+        "3. Сохрани полученный PNG-файл\n"
+        "4. Напиши @Stickers\n"
+        "5. Выбери /newpack\n"
+        "6. Загрузи сохраненные стикеры\n\n"
+        "Или используй официального @Stickers бота!",
+        parse_mode='Markdown'
+    )
+
+@bot.message_handler(func=lambda message: message.text == 'ℹ️ Помощь')
+def show_help(message):
     help_cmd(message)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     try:
-        bot.reply_to(message, "🔄 Создаю стикер...")
+        bot.reply_to(message, "🔄 Создаю стикер с прозрачным фоном...")
         
         # Скачиваем фото
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
         if PILLOW_AVAILABLE:
-            # Создаем настоящий стикер
-            sticker_data = create_sticker_from_photo(downloaded_file)
+            # Создаем стикер с прозрачным фоном
+            sticker_image = create_sticker_image(downloaded_file)
+            
+            # Сохраняем как PNG
+            output = io.BytesIO()
+            sticker_image.save(output, format='PNG', optimize=True)
+            output.seek(0)
             
             # Отправляем стикер
             bot.send_document(
                 message.chat.id, 
-                sticker_data, 
+                output, 
                 visible_file_name='sticker.png',
-                caption="✅ *Готово! Твой стикер:*\n\n"
-                       "• Формат: 512x512 пикселей\n"
-                       "• Прозрачный фон\n" 
-                       "• Готов для Telegram\n\n"
-                       "Чтобы добавить в стикерпак:\n"
+                caption="✅ *Стикер готов!*\n\n"
+                       "📝 *Что дальше:*\n"
                        "1. Сохрани этот файл\n"
-                       "2. Создай новый стикерпак в Telegram\n"
-                       "3. Добавь этот PNG как стикер",
+                       "2. Напиши @Stickers в Telegram\n" 
+                       "3. Создай новый стикерпак\n"
+                       "4. Загрузи этот файл как стикер\n\n"
+                       "✨ Теперь у тебя есть собственный стикер!",
                 parse_mode='Markdown'
             )
+            
         else:
-            # Pillow не доступен - отправляем оригинал
+            # Pillow не доступен
             bot.reply_to(message,
-                "❌ *Функция стикеров временно недоступна*\n\n"
-                "Технические работы... Попробуй позже!",
+                "❌ *Сервис временно недоступен*\n\n"
+                "Ведутся технические работы...",
                 parse_mode='Markdown'
             )
             
@@ -162,20 +195,21 @@ def handle_photo(message):
         bot.reply_to(message,
             "❌ *Не удалось создать стикер*\n\n"
             "Попробуй:\n"
-            "• Другое фото\n" 
+            "• Фото на светлом фоне\n" 
             "• Более четкое изображение\n"
-            "• Объект в центре кадра",
+            "• Другой ракурс\n\n"
+            "Или попробуй позже!",
             parse_mode='Markdown'
         )
 
 @bot.message_handler(func=lambda message: True)
 def echo(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(telebot.types.KeyboardButton('📸 Создать стикер'))
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton('📸 Создать стикер'))
+    markup.add(types.KeyboardButton('📚 Мой стикерпак'))
     
     bot.reply_to(message,
-        "Отправь мне фото для создания стикера! 📷\n"
-        "Или нажми кнопку ниже:",
+        "Выбери действие из меню ниже 👇",
         reply_markup=markup
     )
 
@@ -184,21 +218,21 @@ def echo(message):
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
+        update = types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return 'OK', 200
     return 'Error', 403
 
 @app.route('/')
 def home():
-    return "🤖 Sticker Bot - Ready to create stickers!"
+    return "🤖 Sticker Bot - Create custom sticker packs!"
 
 @app.route('/health')
 def health():
     return "OK"
 
 if __name__ == '__main__':
-    print("🚀 Starting Real Sticker Bot...")
+    print("🚀 Starting Sticker Pack Bot...")
     print(f"📦 Pillow available: {PILLOW_AVAILABLE}")
     
     # Устанавливаем вебхук
