@@ -1,6 +1,6 @@
 import os
 import logging
-from flask import Flask
+from flask import Flask, request, jsonify
 import telebot
 
 # Настройка логирования
@@ -11,13 +11,8 @@ TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "🤖 Sticker Bot is running!"
-
-@app.route('/health')
-def health():
-    return "OK"
+# Глобальная переменная для хранения выбранного стиля
+user_styles = {}
 
 # Клавиатура
 def create_keyboard():
@@ -52,14 +47,27 @@ def make_sticker(message):
 
 @bot.message_handler(func=lambda message: message.text == '🎨 Стили')
 def show_styles(message):
-    bot.reply_to(message,
-        "🎨 Доступные стили (скоро):\n"
-        "• Мультяшный\n"
-        "• Пиксель-арт\n"
-        "• Контуры\n"
-        "• Винтажный\n"
-        "• Без фона\n\n"
-        "Сначала отправь фото! 📸"
+    styles_keyboard = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    styles_keyboard.add(
+        telebot.types.KeyboardButton('🔄 Мультяшный'),
+        telebot.types.KeyboardButton('👾 Пиксель-арт'),
+        telebot.types.KeyboardButton('🌈 Контуры'),
+        telebot.types.KeyboardButton('🔥 Винтажный'),
+        telebot.types.KeyboardButton('⬅️ Назад')
+    )
+    bot.reply_to(message, "🎨 Выбери стиль для будущих стикеров:", reply_markup=styles_keyboard)
+
+@bot.message_handler(func=lambda message: message.text == '⬅️ Назад')
+def back_to_main(message):
+    bot.reply_to(message, "Главное меню:", reply_markup=create_keyboard())
+
+@bot.message_handler(func=lambda message: message.text in ['🔄 Мультяшный', '👾 Пиксель-арт', '🌈 Контуры', '🔥 Винтажный'])
+def set_style(message):
+    user_styles[message.chat.id] = message.text
+    bot.reply_to(message, 
+        f"✅ Выбран стиль: {message.text}\n"
+        f"Теперь нажми 'Сделать стикер' и отправь фото!",
+        reply_markup=create_keyboard()
     )
 
 @bot.message_handler(func=lambda message: message.text == 'ℹ️ Помощь')
@@ -72,14 +80,23 @@ def handle_photo(message):
         # Сохраняем информацию о фото
         file_info = bot.get_file(message.photo[-1].file_id)
         file_size = message.photo[-1].file_size
+        selected_style = user_styles.get(message.chat.id, 'стандартный')
         
-        bot.reply_to(message,
+        response = (
             f"📸 Фото получено!\n"
             f"Размер: {file_size} байт\n"
-            f"ID: {file_info.file_id}\n\n"
-            "🔄 Функция создания стикеров скоро будет добавлена!\n"
-            "А пока можешь отправить еще фото или написать /help"
+            f"Стиль: {selected_style}\n\n"
         )
+        
+        if selected_style != 'стандартный':
+            response += f"🎨 Будет применен стиль: {selected_style}\n\n"
+        
+        response += (
+            "🔄 Функция создания стикеров скоро будет добавлена!\n"
+            "Сейчас работаем над стабильностью бота 💪"
+        )
+        
+        bot.reply_to(message, response)
         
     except Exception as e:
         logger.error(f"Error: {e}")
@@ -92,21 +109,51 @@ def echo(message):
         reply_markup=create_keyboard()
     )
 
+# Вебхук обработчик
+@app.route('/webhook/' + TOKEN, methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return 'OK', 200
+    return 'Error', 403
+
+@app.route('/')
+def home():
+    return "🤖 Sticker Bot is running with webhook!"
+
+@app.route('/health')
+def health():
+    return "OK"
+
+@app.route('/set_webhook')
+def set_webhook():
+    # Получаем URL Render
+    render_url = os.getenv('RENDER_EXTERNAL_URL')
+    if not render_url:
+        return "RENDER_EXTERNAL_URL not set"
+    
+    webhook_url = f"{render_url}/webhook/{TOKEN}"
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
+    return f"Webhook set to: {webhook_url}"
+
 if __name__ == '__main__':
-    print("🚀 Starting basic sticker bot...")
+    print("🚀 Starting bot with webhook...")
     
-    # Запускаем веб-сервер в фоне
-    import threading
-    def run_web():
-        port = int(os.getenv('PORT', 10000))
-        app.run(host='0.0.0.0', port=port, debug=False)
+    # Устанавливаем вебхук при запуске
+    render_url = os.getenv('RENDER_EXTERNAL_URL')
+    if render_url:
+        webhook_url = f"{render_url}/webhook/{TOKEN}"
+        bot.remove_webhook()
+        bot.set_webhook(url=webhook_url)
+        print(f"✅ Webhook set to: {webhook_url}")
+    else:
+        print("⚠️ RENDER_EXTERNAL_URL not set, using polling")
+        bot.remove_webhook()
     
-    web_thread = threading.Thread(target=run_web, daemon=True)
-    web_thread.start()
-    
-    # Запускаем бота
-    try:
-        print("🤖 Starting Telegram bot...")
-        bot.infinity_polling()
-    except Exception as e:
-        print(f"❌ Bot error: {e}")
+    # Запускаем Flask
+    port = int(os.getenv('PORT', 10000))
+    print(f"🌐 Starting web server on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=False)
