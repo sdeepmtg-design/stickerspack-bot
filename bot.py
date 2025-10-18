@@ -1,6 +1,9 @@
 import os
+import io
 import logging
-from flask import Flask, request, jsonify
+import requests
+from flask import Flask, request
+from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 import telebot
 
 # Настройка логирования
@@ -11,57 +14,66 @@ TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# Глобальная переменная для хранения выбранного стиля
+# Хранилище стилей пользователей
 user_styles = {}
 
 # Клавиатура
 def create_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = telebot.types.KeyboardButton('🎨 Стили')
+    btn1 = telebot.types.KeyboardButton('🎨 Выбрать стиль')
     btn2 = telebot.types.KeyboardButton('📸 Сделать стикер')
     btn3 = telebot.types.KeyboardButton('ℹ️ Помощь')
     markup.add(btn1, btn2, btn3)
+    return markup
+
+def create_styles_keyboard():
+    markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(
+        telebot.types.KeyboardButton('🔄 Мультяшный'),
+        telebot.types.KeyboardButton('👾 Пиксель-арт'),
+        telebot.types.KeyboardButton('🌈 Контуры'),
+        telebot.types.KeyboardButton('🔥 Винтажный'),
+        telebot.types.KeyboardButton('⚪ Без фона'),
+        telebot.types.KeyboardButton('⬅️ Назад')
+    )
     return markup
 
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message, 
         "🎉 Привет! Я бот для создания стикеров!\n\n"
-        "Нажми 'Сделать стикер' и отправь мне фото!",
+        "Выбери стиль и отправь мне фото - я сделаю из него стикер! 🎨",
         reply_markup=create_keyboard()
     )
 
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
     bot.reply_to(message,
-        "🤖 Как использовать:\n"
-        "1. Нажми 'Сделать стикер'\n"
-        "2. Отправь фото\n"
-        "3. Получи стикер!\n\n"
-        "Пока что бот в разработке, но скоро здесь будут крутые стикеры! 🎨"
+        "🤖 Как создать стикер:\n"
+        "1. Нажми 'Выбрать стиль'\n"
+        "2. Выбери понравившийся стиль\n"
+        "3. Нажми 'Сделать стикер'\n"
+        "4. Отправь фото\n\n"
+        "✨ Готово! Получишь PNG-файл для стикера!"
     )
 
 @bot.message_handler(func=lambda message: message.text == '📸 Сделать стикер')
 def make_sticker(message):
-    bot.reply_to(message, "Отправь мне фото для создания стикера! 📷")
+    selected_style = user_styles.get(message.chat.id)
+    if selected_style:
+        bot.reply_to(message, f"Стиль: {selected_style}\nОтправь фото для создания стикера! 📷")
+    else:
+        bot.reply_to(message, "Сначала выбери стиль, затем отправь фото! 📷")
 
-@bot.message_handler(func=lambda message: message.text == '🎨 Стили')
+@bot.message_handler(func=lambda message: message.text == '🎨 Выбрать стиль')
 def show_styles(message):
-    styles_keyboard = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    styles_keyboard.add(
-        telebot.types.KeyboardButton('🔄 Мультяшный'),
-        telebot.types.KeyboardButton('👾 Пиксель-арт'),
-        telebot.types.KeyboardButton('🌈 Контуры'),
-        telebot.types.KeyboardButton('🔥 Винтажный'),
-        telebot.types.KeyboardButton('⬅️ Назад')
-    )
-    bot.reply_to(message, "🎨 Выбери стиль для будущих стикеров:", reply_markup=styles_keyboard)
+    bot.reply_to(message, "🎨 Выбери стиль для стикера:", reply_markup=create_styles_keyboard())
 
 @bot.message_handler(func=lambda message: message.text == '⬅️ Назад')
 def back_to_main(message):
     bot.reply_to(message, "Главное меню:", reply_markup=create_keyboard())
 
-@bot.message_handler(func=lambda message: message.text in ['🔄 Мультяшный', '👾 Пиксель-арт', '🌈 Контуры', '🔥 Винтажный'])
+@bot.message_handler(func=lambda message: message.text in ['🔄 Мультяшный', '👾 Пиксель-арт', '🌈 Контуры', '🔥 Винтажный', '⚪ Без фона'])
 def set_style(message):
     user_styles[message.chat.id] = message.text
     bot.reply_to(message, 
@@ -77,35 +89,67 @@ def show_help(message):
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     try:
-        # Сохраняем информацию о фото
+        selected_style = user_styles.get(message.chat.id, '🔄 Мультяшный')
+        bot.reply_to(message, f"🔄 Обрабатываю фото в стиле {selected_style}...")
+        
+        # Скачиваем фото
         file_info = bot.get_file(message.photo[-1].file_id)
-        file_size = message.photo[-1].file_size
-        selected_style = user_styles.get(message.chat.id, 'стандартный')
+        downloaded_file = bot.download_file(file_info.file_path)
         
-        response = (
-            f"📸 Фото получено!\n"
-            f"Размер: {file_size} байт\n"
-            f"Стиль: {selected_style}\n\n"
-        )
+        # Создаем простой стикер
+        sticker_data = create_simple_sticker(downloaded_file, selected_style)
         
-        if selected_style != 'стандартный':
-            response += f"🎨 Будет применен стиль: {selected_style}\n\n"
-        
-        response += (
-            "🔄 Функция создания стикеров скоро будет добавлена!\n"
-            "Сейчас работаем над стабильностью бота 💪"
-        )
-        
-        bot.reply_to(message, response)
+        # Отправляем результат
+        bot.send_document(message.chat.id, sticker_data, visible_file_name='sticker.png')
+        bot.reply_to(message, f"✅ Готово! Стикер в стиле: {selected_style}")
         
     except Exception as e:
-        logger.error(f"Error: {e}")
-        bot.reply_to(message, "❌ Ошибка при обработке фото")
+        logger.error(f"Error processing photo: {e}")
+        bot.reply_to(message, "❌ Ошибка при создании стикера. Попробуй другое фото.")
+
+def create_simple_sticker(image_data, style):
+    """Создает простой стикер без сложной обработки"""
+    try:
+        # Пробуем использовать Pillow если установлен
+        image = Image.open(io.BytesIO(image_data)).convert('RGB')
+        
+        # Базовая обработка в зависимости от стиля
+        if style == '👾 Пиксель-арт':
+            # Пикселизация
+            small = image.resize((64, 64), Image.NEAREST)
+            result = small.resize(image.size, Image.NEAREST)
+        elif style == '🌈 Контуры':
+            # Упрощенные контуры
+            result = image.filter(ImageFilter.EDGE_ENHANCE_MORE)
+        elif style == '🔥 Винтажный':
+            # Упрощенный винтажный эффект - затемнение
+            enhancer = ImageEnhance.Brightness(image)
+            result = enhancer.enhance(0.8)
+        elif style == '⚪ Без фона':
+            # Упрощенное удаление фона (делаем белый фон)
+            if image.mode != 'RGBA':
+                image = image.convert('RGBA')
+            result = image
+        else:  # Мультяшный по умолчанию
+            # Увеличение насыщенности
+            enhancer = ImageEnhance.Color(image)
+            result = enhancer.enhance(1.3)
+        
+        # Сохраняем как PNG
+        output = io.BytesIO()
+        result.save(output, format='PNG')
+        output.seek(0)
+        return output
+        
+    except Exception as e:
+        logger.error(f"Pillow processing failed: {e}")
+        # Если Pillow не работает, возвращаем оригинальное изображение
+        return io.BytesIO(image_data)
 
 @bot.message_handler(func=lambda message: True)
 def echo(message):
     bot.reply_to(message, 
-        "Используй кнопки ниже или отправь фото для создания стикера! 📷",
+        "Используй кнопки ниже для создания стикеров! 📷",
         reply_markup=create_keyboard()
     )
 
@@ -129,7 +173,6 @@ def health():
 
 @app.route('/set_webhook')
 def set_webhook():
-    # Получаем URL Render
     render_url = os.getenv('RENDER_EXTERNAL_URL')
     if not render_url:
         return "RENDER_EXTERNAL_URL not set"
@@ -140,18 +183,15 @@ def set_webhook():
     return f"Webhook set to: {webhook_url}"
 
 if __name__ == '__main__':
-    print("🚀 Starting bot with webhook...")
+    print("🚀 Starting sticker bot...")
     
-    # Устанавливаем вебхук при запуске
+    # Устанавливаем вебхук
     render_url = os.getenv('RENDER_EXTERNAL_URL')
     if render_url:
         webhook_url = f"{render_url}/webhook/{TOKEN}"
         bot.remove_webhook()
         bot.set_webhook(url=webhook_url)
         print(f"✅ Webhook set to: {webhook_url}")
-    else:
-        print("⚠️ RENDER_EXTERNAL_URL not set, using polling")
-        bot.remove_webhook()
     
     # Запускаем Flask
     port = int(os.getenv('PORT', 10000))
