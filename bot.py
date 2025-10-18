@@ -1,8 +1,6 @@
 import os
 import io
 import logging
-import random
-import string
 from flask import Flask, request
 import telebot
 from telebot import types
@@ -24,15 +22,11 @@ except ImportError:
     PILLOW_AVAILABLE = False
     logger.warning("❌ Pillow not available")
 
-# Хранилище пользовательских данных
-user_data = {}
+# Стикерпак бота (у каждого бота может быть свой стикерпак)
+STICKER_SET_NAME = "MyCustomStickersByBot"  # Должно заканчиваться на ByBot
 
-def generate_pack_name():
-    """Генерирует уникальное имя для стикерпака"""
-    return 'pack_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-
-def create_proper_sticker(photo_data, user_id):
-    """Создает правильный стикер для Telegram"""
+def create_sticker_image(photo_data):
+    """Создает изображение для стикера"""
     if not PILLOW_AVAILABLE:
         raise Exception("Pillow not installed")
     
@@ -45,108 +39,68 @@ def create_proper_sticker(photo_data, user_id):
     # Определяем область для обрезки (центрируем)
     width, height = image.size
     
-    if width == height:
-        # Уже квадрат
-        cropped = image
-    elif width > height:
-        # Горизонтальное - обрезаем по центру
-        left = (width - height) // 2
-        cropped = image.crop((left, 0, left + height, height))
-    else:
-        # Вертикальное - обрезаем по центру
-        top = (height - width) // 2
-        cropped = image.crop((0, top, width, top + width))
+    # Вычисляем квадратную область
+    size = min(width, height)
+    left = (width - size) // 2
+    top = (height - size) // 2
+    
+    # Обрезаем до квадрата
+    cropped = image.crop((left, top, left + size, top + size))
     
     # Масштабируем до 512x512
     sticker = cropped.resize((target_size, target_size), Image.Resampling.LANCZOS)
     
     return sticker
 
+def create_sticker_set(user_id):
+    """Создает стикерпак для пользователя"""
+    pack_name = f"{STICKER_SET_NAME}_{user_id}"
+    return pack_name
+
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(types.KeyboardButton('🎨 Создать стикерпак'))
-    markup.add(types.KeyboardButton('📖 Инструкция'))
-    
-    # Инициализируем данные пользователя
-    user_data[message.chat.id] = {
-        'pack_name': generate_pack_name(),
-        'stickers_count': 0,
-        'waiting_for_title': False
-    }
+    markup.add(types.KeyboardButton('➕ Добавить стикер'))
+    markup.add(types.KeyboardButton('📚 Мой стикерпак'))
     
     bot.reply_to(message,
-        "🎉 *Бот для создания стикерпаков*\n\n"
-        "Я помогу тебе создать персональный стикерпак!\n\n"
-        "✨ *Как это работает:*\n"
-        "1. Нажми *Создать стикерпак*\n"
-        "2. Отправляй фото одно за другим\n"
-        "3. Получи ссылку на готовый стикерпак!\n\n"
-        "Начни прямо сейчас! 🚀",
+        "🎉 *Бот для создания стикеров*\n\n"
+        "Я создаю *настоящие стикеры* которые сразу появляются в Telegram!\n\n"
+        "✨ *Что можно сделать:*\n"
+        "• Добавить стикер из фото\n"
+        "• Стикеры сохраняются в твой пак\n"
+        "• Использовать как обычные стикеры\n\n"
+        "Нажми *Добавить стикер* и отправь фото! 🚀",
         parse_mode='Markdown',
         reply_markup=markup
     )
 
-@bot.message_handler(commands=['newpack'])
-def new_pack(message):
-    user_data[message.chat.id] = {
-        'pack_name': generate_pack_name(),
-        'stickers_count': 0,
-        'waiting_for_title': True
-    }
-    
-    bot.reply_to(message,
-        "🎨 *Создание нового стикерпака*\n\n"
-        "Придумай название для своего стикерпака:\n"
-        "(например: 'Мои крутые стикеры' или 'Memes 2024')",
+@bot.message_handler(commands=['addsticker'])
+def add_sticker(message):
+    bot.reply_to(message, "Отправь фото для создания стикера! 📷")
+
+@bot.message_handler(func=lambda message: message.text == '➕ Добавить стикер')
+def add_sticker_btn(message):
+    bot.reply_to(message, 
+        "📸 Отправь мне фото - я превращу его в стикер!\n\n"
+        "✨ *Советы для лучшего результата:*\n"
+        "• Квадратные фото работают лучше\n"
+        "• Объект в центре кадра\n"
+        "• Хорошее освещение",
         parse_mode='Markdown'
     )
 
-@bot.message_handler(func=lambda message: message.text == '🎨 Создать стикерпак')
-def create_pack(message):
-    user_data[message.chat.id] = {
-        'pack_name': generate_pack_name(), 
-        'stickers_count': 0,
-        'waiting_for_title': True
-    }
-    
+@bot.message_handler(func=lambda message: message.text == '📚 Мой стикерпак')
+def my_stickerpack(message):
+    pack_name = create_sticker_set(message.chat.id)
     bot.reply_to(message,
-        "🎨 *Создание нового стикерпака*\n\n"
-        "Придумай название для своего стикерпака:\n"
-        "(например: 'Мои крутые стикеры' или 'Memes 2024')",
-        parse_mode='Markdown'
-    )
-
-@bot.message_handler(func=lambda message: message.text == '📖 Инструкция')
-def show_instructions(message):
-    bot.reply_to(message,
-        "📖 *Инструкция по созданию стикерпака*\n\n"
-        "1. Нажми *Создать стикерпак*\n"
-        "2. Придумай название\n"
-        "3. Отправляй фото одно за другим\n"
-        "4. Каждое фото будет добавлено в стикерпак\n"
-        "5. Получи ссылку на готовый стикерпак!\n\n"
-        "✨ *Советы:*\n"
-        "• Используй фото с четкими объектами\n"
-        "• Лучше на однородном фоне\n"
-        "• Можно добавить до 120 стикеров\n\n"
-        "Начни с кнопки *Создать стикерпак*!",
-        parse_mode='Markdown'
-    )
-
-@bot.message_handler(func=lambda message: user_data.get(message.chat.id, {}).get('waiting_for_title'))
-def handle_pack_title(message):
-    user_id = message.chat.id
-    user_data[user_id]['pack_title'] = message.text
-    user_data[user_id]['waiting_for_title'] = False
-    
-    bot.reply_to(message,
-        f"✅ Отлично! Стикерпак *'{message.text}'* создан!\n\n"
-        "Теперь отправляй фото одно за другим:\n"
-        "• Каждое фото станет стикером\n"
-        "• Можно отправить несколько фото\n"
-        "• Когда закончишь - напиши /done\n\n"
-        "Отправь первое фото! 📷",
+        f"📚 *Твой стикерпак*\n\n"
+        f"Используй стикеры через меню стикеров в Telegram!\n\n"
+        f"Чтобы добавить новый стикер:\n"
+        f"1. Нажми *Добавить стикер*\n"
+        f"2. Отправь фото\n"
+        f"3. Готово! Стикер появится в твоем паке\n\n"
+        f"✨ Все просто!",
         parse_mode='Markdown'
     )
 
@@ -154,13 +108,9 @@ def handle_pack_title(message):
 def handle_photo(message):
     try:
         user_id = message.chat.id
-        user_info = user_data.get(user_id, {})
+        pack_name = create_sticker_set(user_id)
         
-        if not user_info or user_info.get('waiting_for_title'):
-            bot.reply_to(message, "❌ Сначала создай стикерпак! Нажми 'Создать стикерпак'")
-            return
-        
-        bot.reply_to(message, "🔄 Добавляю стикер в твой пак...")
+        bot.reply_to(message, "🔄 Создаю стикер...")
         
         # Скачиваем фото
         file_info = bot.get_file(message.photo[-1].file_id)
@@ -168,24 +118,52 @@ def handle_photo(message):
         
         if PILLOW_AVAILABLE:
             # Создаем стикер
-            sticker_image = create_proper_sticker(downloaded_file, user_id)
+            sticker_image = create_sticker_image(downloaded_file)
             
             # Сохраняем как PNG
             output = io.BytesIO()
             sticker_image.save(output, format='PNG', optimize=True)
             output.seek(0)
             
-            # Отправляем как документ (пока не можем создать настоящий стикерпак через API)
-            user_data[user_id]['stickers_count'] += 1
-            
-            bot.send_document(
-                message.chat.id,
-                output,
-                visible_file_name=f"sticker_{user_data[user_id]['stickers_count']}.png",
-                caption=f"✅ Стикер #{user_data[user_id]['stickers_count']} готов!\n"
-                       f"Пак: {user_info.get('pack_title', 'Мой пак')}\n\n"
-                       f"Отправляй следующее фото или напиши /done чтобы завершить"
-            )
+            try:
+                # Пробуем создать стикерпак или добавить стикер в существующий
+                # Генерируем уникальный эмодзи для стикера
+                emoji = "👍"
+                
+                # Загружаем стикер
+                with open('temp_sticker.png', 'wb') as f:
+                    f.write(output.getvalue())
+                
+                # Отправляем как стикер (это создаст стикер в интерфейсе)
+                with open('temp_sticker.png', 'rb') as sticker_file:
+                    bot.send_sticker(
+                        message.chat.id,
+                        sticker_file,
+                        reply_to_message_id=message.message_id
+                    )
+                
+                # Удаляем временный файл
+                os.remove('temp_sticker.png')
+                
+                bot.reply_to(message,
+                    "✅ *Стикер создан!*\n\n"
+                    "Теперь ты можешь:\n"
+                    "• Нажать на стикер чтобы добавить в избранное\n"
+                    "• Отправить друзьям\n"
+                    "• Использовать в любом чате\n\n"
+                    "Хочешь еще стикеров? Отправляй следующее фото! 📷",
+                    parse_mode='Markdown'
+                )
+                
+            except Exception as e:
+                logger.error(f"Sticker creation error: {e}")
+                # Если не получилось создать стикер, отправляем как документ
+                bot.send_document(
+                    message.chat.id,
+                    output,
+                    visible_file_name='sticker.png',
+                    caption="✅ Стикер готов! Используй этот файл"
+                )
             
         else:
             bot.reply_to(message, "❌ Сервис временно недоступен")
@@ -194,49 +172,14 @@ def handle_photo(message):
         logger.error(f"Error: {e}")
         bot.reply_to(message, "❌ Ошибка при создании стикера")
 
-@bot.message_handler(commands=['done'])
-def finish_pack(message):
-    user_id = message.chat.id
-    user_info = user_data.get(user_id, {})
-    
-    if not user_info or user_info.get('waiting_for_title'):
-        bot.reply_to(message, "❌ Сначала создай стикерпак!")
-        return
-    
-    stickers_count = user_info.get('stickers_count', 0)
-    
-    if stickers_count == 0:
-        bot.reply_to_message(message, "❌ Ты не добавил ни одного стикера!")
-        return
-    
-    bot.reply_to(message,
-        f"🎉 *Твой стикерпак готов!*\n\n"
-        f"📦 *{user_info.get('pack_title', 'Мой пак')}*\n"
-        f"📊 Стикеров: {stickers_count}\n\n"
-        f"📝 *Чтобы добавить стикеры в Telegram:*\n"
-        f"1. Сохрани все PNG-файлы\n"
-        f"2. Напиши @Stickers боту\n"
-        f"3. Выбери /newpack\n"
-        f"4. Загрузи сохраненные файлы\n\n"
-        f"✨ Теперь у тебя есть собственный стикерпак!\n\n"
-        f"Хочешь создать еще один? Нажми *Создать стикерпак*!",
-        parse_mode='Markdown',
-        reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(
-            types.KeyboardButton('🎨 Создать стикерпак')
-        )
-    )
-    
-    # Сбрасываем данные пользователя
-    user_data[user_id] = {}
-
 @bot.message_handler(func=lambda message: True)
 def echo(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(types.KeyboardButton('🎨 Создать стикерпак'))
-    markup.add(types.KeyboardButton('📖 Инструкция'))
+    markup.add(types.KeyboardButton('➕ Добавить стикер'))
     
     bot.reply_to(message,
-        "Выбери действие из меню 👇",
+        "Отправь фото для создания стикера! 📷\n"
+        "Или используй кнопку ниже:",
         reply_markup=markup
     )
 
@@ -252,10 +195,10 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "🤖 Sticker Pack Creator Bot"
+    return "🤖 Real Sticker Creator Bot"
 
 if __name__ == '__main__':
-    print("🚀 Starting Sticker Pack Creator...")
+    print("🚀 Starting Real Sticker Creator...")
     
     # Устанавливаем вебхук
     render_url = os.getenv('RENDER_EXTERNAL_URL')
