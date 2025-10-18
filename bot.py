@@ -1,9 +1,7 @@
 import os
 import io
 import logging
-import requests
 from flask import Flask, request
-from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 import telebot
 
 # Настройка логирования
@@ -29,11 +27,9 @@ def create_keyboard():
 def create_styles_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(
-        telebot.types.KeyboardButton('🔄 Мультяшный'),
-        telebot.types.KeyboardButton('👾 Пиксель-арт'),
-        telebot.types.KeyboardButton('🌈 Контуры'),
-        telebot.types.KeyboardButton('🔥 Винтажный'),
-        telebot.types.KeyboardButton('⚪ Без фона'),
+        telebot.types.KeyboardButton('🔄 Простой стикер'),
+        telebot.types.KeyboardButton('👾 Квадратный'),
+        telebot.types.KeyboardButton('🌈 Прозрачный'),
         telebot.types.KeyboardButton('⬅️ Назад')
     )
     return markup
@@ -59,11 +55,8 @@ def help_cmd(message):
 
 @bot.message_handler(func=lambda message: message.text == '📸 Сделать стикер')
 def make_sticker(message):
-    selected_style = user_styles.get(message.chat.id)
-    if selected_style:
-        bot.reply_to(message, f"Стиль: {selected_style}\nОтправь фото для создания стикера! 📷")
-    else:
-        bot.reply_to(message, "Сначала выбери стиль, затем отправь фото! 📷")
+    selected_style = user_styles.get(message.chat.id, '🔄 Простой стикер')
+    bot.reply_to(message, f"Стиль: {selected_style}\nОтправь фото для создания стикера! 📷")
 
 @bot.message_handler(func=lambda message: message.text == '🎨 Выбрать стиль')
 def show_styles(message):
@@ -73,7 +66,7 @@ def show_styles(message):
 def back_to_main(message):
     bot.reply_to(message, "Главное меню:", reply_markup=create_keyboard())
 
-@bot.message_handler(func=lambda message: message.text in ['🔄 Мультяшный', '👾 Пиксель-арт', '🌈 Контуры', '🔥 Винтажный', '⚪ Без фона'])
+@bot.message_handler(func=lambda message: message.text in ['🔄 Простой стикер', '👾 Квадратный', '🌈 Прозрачный'])
 def set_style(message):
     user_styles[message.chat.id] = message.text
     bot.reply_to(message, 
@@ -89,15 +82,37 @@ def show_help(message):
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     try:
-        selected_style = user_styles.get(message.chat.id, '🔄 Мультяшный')
-        bot.reply_to(message, f"🔄 Обрабатываю фото в стиле {selected_style}...")
+        selected_style = user_styles.get(message.chat.id, '🔄 Простой стикер')
+        bot.reply_to(message, f"🔄 Создаю стикер в стиле {selected_style}...")
         
         # Скачиваем фото
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # Создаем простой стикер
-        sticker_data = create_simple_sticker(downloaded_file, selected_style)
+        # Пробуем обработать с Pillow, если не получится - отправляем оригинал
+        try:
+            from PIL import Image, ImageOps
+            
+            image = Image.open(io.BytesIO(downloaded_file)).convert('RGB')
+            
+            if selected_style == '👾 Квадратный':
+                # Делаем квадратным
+                size = min(image.size)
+                image = ImageOps.fit(image, (size, size), method=Image.Resampling.LANCZOS)
+            elif selected_style == '🌈 Прозрачный':
+                # Конвертируем в PNG с прозрачностью
+                image = image.convert('RGBA')
+            
+            # Сохраняем как PNG
+            output = io.BytesIO()
+            image.save(output, format='PNG', optimize=True)
+            output.seek(0)
+            sticker_data = output
+            
+        except ImportError:
+            # Если Pillow не установлен, используем оригинальное изображение
+            logger.warning("Pillow not available, using original image")
+            sticker_data = io.BytesIO(downloaded_file)
         
         # Отправляем результат
         bot.send_document(message.chat.id, sticker_data, visible_file_name='sticker.png')
@@ -106,45 +121,6 @@ def handle_photo(message):
     except Exception as e:
         logger.error(f"Error processing photo: {e}")
         bot.reply_to(message, "❌ Ошибка при создании стикера. Попробуй другое фото.")
-
-def create_simple_sticker(image_data, style):
-    """Создает простой стикер без сложной обработки"""
-    try:
-        # Пробуем использовать Pillow если установлен
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        
-        # Базовая обработка в зависимости от стиля
-        if style == '👾 Пиксель-арт':
-            # Пикселизация
-            small = image.resize((64, 64), Image.NEAREST)
-            result = small.resize(image.size, Image.NEAREST)
-        elif style == '🌈 Контуры':
-            # Упрощенные контуры
-            result = image.filter(ImageFilter.EDGE_ENHANCE_MORE)
-        elif style == '🔥 Винтажный':
-            # Упрощенный винтажный эффект - затемнение
-            enhancer = ImageEnhance.Brightness(image)
-            result = enhancer.enhance(0.8)
-        elif style == '⚪ Без фона':
-            # Упрощенное удаление фона (делаем белый фон)
-            if image.mode != 'RGBA':
-                image = image.convert('RGBA')
-            result = image
-        else:  # Мультяшный по умолчанию
-            # Увеличение насыщенности
-            enhancer = ImageEnhance.Color(image)
-            result = enhancer.enhance(1.3)
-        
-        # Сохраняем как PNG
-        output = io.BytesIO()
-        result.save(output, format='PNG')
-        output.seek(0)
-        return output
-        
-    except Exception as e:
-        logger.error(f"Pillow processing failed: {e}")
-        # Если Pillow не работает, возвращаем оригинальное изображение
-        return io.BytesIO(image_data)
 
 @bot.message_handler(func=lambda message: True)
 def echo(message):
