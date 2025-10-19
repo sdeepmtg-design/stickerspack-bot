@@ -4,6 +4,8 @@ import logging
 from flask import Flask, request
 import telebot
 from telebot import types
+import random
+import string
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -22,85 +24,144 @@ except ImportError:
     PILLOW_AVAILABLE = False
     logger.warning("❌ Pillow not available")
 
-# Стикерпак бота (у каждого бота может быть свой стикерпак)
-STICKER_SET_NAME = "MyCustomStickersByBot"  # Должно заканчиваться на ByBot
+# Хранилище данных пользователей
+user_packs = {}
+
+def generate_pack_name(user_id):
+    """Генерирует уникальное имя для стикерпака"""
+    return f"pack_{user_id}_{random.randint(1000, 9999)}_by_{bot.get_me().username}"
 
 def create_sticker_image(photo_data):
-    """Создает изображение для стикера"""
+    """Создает изображение для стикера 512x512"""
     if not PILLOW_AVAILABLE:
         raise Exception("Pillow not installed")
     
-    # Открываем изображение
     image = Image.open(io.BytesIO(photo_data)).convert('RGBA')
-    
-    # Размер для стикеров Telegram
     target_size = 512
     
-    # Определяем область для обрезки (центрируем)
+    # Создаем квадратное изображение с прозрачным фоном
     width, height = image.size
     
-    # Вычисляем квадратную область
-    size = min(width, height)
-    left = (width - size) // 2
-    top = (height - size) // 2
+    # Вычисляем размер для вписывания
+    scale = min(target_size / width, target_size / height)
+    new_width = int(width * scale)
+    new_height = int(height * scale)
     
-    # Обрезаем до квадрата
-    cropped = image.crop((left, top, left + size, top + size))
+    # Масштабируем
+    resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
     
-    # Масштабируем до 512x512
-    sticker = cropped.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    # Создаем прозрачный фон 512x512
+    sticker = Image.new('RGBA', (target_size, target_size), (255, 255, 255, 0))
+    
+    # Центрируем изображение
+    x = (target_size - new_width) // 2
+    y = (target_size - new_height) // 2
+    
+    # Накладываем на прозрачный фон
+    sticker.paste(resized, (x, y), resized)
     
     return sticker
 
-def create_sticker_set(user_id):
-    """Создает стикерпак для пользователя"""
-    pack_name = f"{STICKER_SET_NAME}_{user_id}"
-    return pack_name
-
 @bot.message_handler(commands=['start'])
 def start(message):
+    user_id = message.chat.id
+    
+    # Инициализируем или получаем данные пользователя
+    if user_id not in user_packs:
+        user_packs[user_id] = {
+            'pack_name': generate_pack_name(user_id),
+            'stickers_count': 0,
+            'pack_created': False
+        }
+    
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton('🆕 Создать стикерпак'))
     markup.add(types.KeyboardButton('➕ Добавить стикер'))
     markup.add(types.KeyboardButton('📚 Мой стикерпак'))
     
     bot.reply_to(message,
-        "🎉 *Бот для создания стикеров*\n\n"
-        "Я создаю *настоящие стикеры* которые сразу появляются в Telegram!\n\n"
-        "✨ *Что можно сделать:*\n"
-        "• Добавить стикер из фото\n"
-        "• Стикеры сохраняются в твой пак\n"
-        "• Использовать как обычные стикеры\n\n"
-        "Нажми *Добавить стикер* и отправь фото! 🚀",
+        "🎉 *Бот для создания стикерпаков*\n\n"
+        "Я создаю *настоящие стикерпаки* через Telegram API!\n\n"
+        "✨ *Процесс:*\n"
+        "1. Нажми *Создать стикерпак*\n"
+        "2. Придумай название\n"
+        "3. Добавляй стикеры из фото\n"
+        "4. Получи ссылку на готовый пак!\n\n"
+        "Начни сейчас! 🚀",
         parse_mode='Markdown',
         reply_markup=markup
     )
 
-@bot.message_handler(commands=['addsticker'])
-def add_sticker(message):
-    bot.reply_to(message, "Отправь фото для создания стикера! 📷")
-
-@bot.message_handler(func=lambda message: message.text == '➕ Добавить стикер')
-def add_sticker_btn(message):
-    bot.reply_to(message, 
-        "📸 Отправь мне фото - я превращу его в стикер!\n\n"
-        "✨ *Советы для лучшего результата:*\n"
-        "• Квадратные фото работают лучше\n"
-        "• Объект в центре кадра\n"
-        "• Хорошее освещение",
+@bot.message_handler(func=lambda message: message.text == '🆕 Создать стикерпак')
+def create_new_pack(message):
+    user_id = message.chat.id
+    
+    # Генерируем новое имя для пакета
+    user_packs[user_id] = {
+        'pack_name': generate_pack_name(user_id),
+        'stickers_count': 0,
+        'pack_created': False,
+        'waiting_for_title': True
+    }
+    
+    bot.reply_to(message,
+        "🎨 *Создание нового стикерпака*\n\n"
+        "Придумай название для своего стикерпака:\n"
+        "(например: 'Мои мемы' или 'Персональные стикеры')",
         parse_mode='Markdown'
     )
 
+@bot.message_handler(func=lambda message: user_packs.get(message.chat.id, {}).get('waiting_for_title'))
+def handle_pack_title(message):
+    user_id = message.chat.id
+    pack_title = message.text
+    
+    user_packs[user_id]['pack_title'] = pack_title
+    user_packs[user_id]['waiting_for_title'] = False
+    
+    bot.reply_to(message,
+        f"✅ Отлично! Стикерпак *'{pack_title}'* готов к созданию!\n\n"
+        "Теперь отправь первое фото для стикера 📷\n"
+        "Я создам стикерпак и добавлю туда твой первый стикер!",
+        parse_mode='Markdown'
+    )
+
+@bot.message_handler(func=lambda message: message.text == '➕ Добавить стикер')
+def add_sticker(message):
+    user_id = message.chat.id
+    user_data = user_packs.get(user_id, {})
+    
+    if not user_data or not user_data.get('pack_created'):
+        bot.reply_to(message, "❌ Сначала создай стикерпак через '🆕 Создать стикерпак'")
+        return
+    
+    bot.reply_to(message, "📸 Отправь фото для нового стикера!")
+
 @bot.message_handler(func=lambda message: message.text == '📚 Мой стикерпак')
-def my_stickerpack(message):
-    pack_name = create_sticker_set(message.chat.id)
+def show_my_pack(message):
+    user_id = message.chat.id
+    user_data = user_packs.get(user_id, {})
+    
+    if not user_data or not user_data.get('pack_created'):
+        bot.reply_to(message, "❌ У тебя еще нет стикерпака. Создай его через '🆕 Создать стикерпак'")
+        return
+    
+    pack_name = user_data['pack_name']
+    stickers_count = user_data['stickers_count']
+    
+    # Ссылка на стикерпак
+    bot_username = bot.get_me().username
+    stickerpack_url = f"https://t.me/addstickers/{pack_name}"
+    
     bot.reply_to(message,
         f"📚 *Твой стикерпак*\n\n"
-        f"Используй стикеры через меню стикеров в Telegram!\n\n"
-        f"Чтобы добавить новый стикер:\n"
-        f"1. Нажми *Добавить стикер*\n"
-        f"2. Отправь фото\n"
-        f"3. Готово! Стикер появится в твоем паке\n\n"
-        f"✨ Все просто!",
+        f"🪄 *{user_data.get('pack_title', 'Мой стикерпак')}*\n"
+        f"📊 Стикеров: {stickers_count}\n\n"
+        f"🔗 *Ссылка:* {stickerpack_url}\n\n"
+        f"✨ *Как использовать:*\n"
+        f"• Перейди по ссылке выше\n"
+        f"• Нажми 'Add Stickers'\n"
+        f"• Готово! Твой пак в Telegram!",
         parse_mode='Markdown'
     )
 
@@ -108,7 +169,11 @@ def my_stickerpack(message):
 def handle_photo(message):
     try:
         user_id = message.chat.id
-        pack_name = create_sticker_set(user_id)
+        user_data = user_packs.get(user_id, {})
+        
+        if not user_data:
+            bot.reply_to(message, "❌ Сначала создай стикерпак через '🆕 Создать стикерпак'")
+            return
         
         bot.reply_to(message, "🔄 Создаю стикер...")
         
@@ -116,57 +181,76 @@ def handle_photo(message):
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        if PILLOW_AVAILABLE:
-            # Создаем стикер
-            sticker_image = create_sticker_image(downloaded_file)
-            
-            # Сохраняем как PNG
-            output = io.BytesIO()
-            sticker_image.save(output, format='PNG', optimize=True)
-            output.seek(0)
-            
-            try:
-                # Пробуем создать стикерпак или добавить стикер в существующий
-                # Генерируем уникальный эмодзи для стикера
-                emoji = "👍"
-                
-                # Загружаем стикер
-                with open('temp_sticker.png', 'wb') as f:
-                    f.write(output.getvalue())
-                
-                # Отправляем как стикер (это создаст стикер в интерфейсе)
-                with open('temp_sticker.png', 'rb') as sticker_file:
-                    bot.send_sticker(
-                        message.chat.id,
-                        sticker_file,
-                        reply_to_message_id=message.message_id
-                    )
-                
-                # Удаляем временный файл
-                os.remove('temp_sticker.png')
-                
-                bot.reply_to(message,
-                    "✅ *Стикер создан!*\n\n"
-                    "Теперь ты можешь:\n"
-                    "• Нажать на стикер чтобы добавить в избранное\n"
-                    "• Отправить друзьям\n"
-                    "• Использовать в любом чате\n\n"
-                    "Хочешь еще стикеров? Отправляй следующее фото! 📷",
-                    parse_mode='Markdown'
-                )
-                
-            except Exception as e:
-                logger.error(f"Sticker creation error: {e}")
-                # Если не получилось создать стикер, отправляем как документ
-                bot.send_document(
-                    message.chat.id,
-                    output,
-                    visible_file_name='sticker.png',
-                    caption="✅ Стикер готов! Используй этот файл"
-                )
-            
-        else:
+        if not PILLOW_AVAILABLE:
             bot.reply_to(message, "❌ Сервис временно недоступен")
+            return
+        
+        # Создаем стикер
+        sticker_image = create_sticker_image(downloaded_file)
+        
+        # Сохраняем во временный файл
+        temp_file = f"temp_{user_id}_{user_data['stickers_count']}.png"
+        sticker_image.save(temp_file, format='PNG')
+        
+        # Эмодзи для стикера
+        emojis = "😀"
+        
+        try:
+            with open(temp_file, 'rb') as sticker_data:
+                if not user_data.get('pack_created'):
+                    # Создаем новый стикерпак с первым стикером
+                    bot.create_new_sticker_set(
+                        user_id=user_id,
+                        name=user_data['pack_name'],
+                        title=user_data.get('pack_title', 'Мои стикеры'),
+                        png_sticker=sticker_data,
+                        emojis=emojis
+                    )
+                    user_packs[user_id]['pack_created'] = True
+                    user_packs[user_id]['stickers_count'] = 1
+                    
+                    stickerpack_url = f"https://t.me/addstickers/{user_data['pack_name']}"
+                    
+                    bot.reply_to(message,
+                        f"🎉 *Стикерпак создан!*\n\n"
+                        f"✅ Первый стикер добавлен!\n"
+                        f"📚 Пак: {user_data.get('pack_title', 'Мои стикеры')}\n\n"
+                        f"🔗 *Ссылка на стикерпак:*\n"
+                        f"{stickerpack_url}\n\n"
+                        f"✨ Перейди по ссылке чтобы добавить пак в Telegram!\n\n"
+                        f"Хочешь добавить еще стикеров? Отправляй следующее фото! 📷",
+                        parse_mode='Markdown'
+                    )
+                    
+                else:
+                    # Добавляем стикер в существующий пак
+                    bot.add_sticker_to_set(
+                        user_id=user_id,
+                        name=user_data['pack_name'],
+                        png_sticker=sticker_data,
+                        emojis=emojis
+                    )
+                    user_packs[user_id]['stickers_count'] += 1
+                    
+                    bot.reply_to(message,
+                        f"✅ *Стикер #{user_packs[user_id]['stickers_count']} добавлен!*\n\n"
+                        f"📚 Пак: {user_data.get('pack_title', 'Мои стикеры')}\n"
+                        f"📊 Всего стикеров: {user_packs[user_id]['stickers_count']}\n\n"
+                        f"Продолжай добавлять стикеры! 📷",
+                        parse_mode='Markdown'
+                    )
+            
+            # Удаляем временный файл
+            os.remove(temp_file)
+            
+        except Exception as e:
+            logger.error(f"Sticker API error: {e}")
+            os.remove(temp_file)
+            
+            if "STICKERSET_INVALID" in str(e):
+                bot.reply_to(message, "❌ Ошибка создания стикерпака. Попробуй создать новый пак через '🆕 Создать стикерпак'")
+            else:
+                bot.reply_to(message, f"❌ Ошибка: {e}")
             
     except Exception as e:
         logger.error(f"Error: {e}")
@@ -175,11 +259,10 @@ def handle_photo(message):
 @bot.message_handler(func=lambda message: True)
 def echo(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(types.KeyboardButton('➕ Добавить стикер'))
+    markup.add(types.KeyboardButton('🆕 Создать стикерпак'))
     
     bot.reply_to(message,
-        "Отправь фото для создания стикера! 📷\n"
-        "Или используй кнопку ниже:",
+        "Нажми '🆕 Создать стикерпак' чтобы начать создание стикеров! 🎨",
         reply_markup=markup
     )
 
@@ -195,10 +278,10 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "🤖 Real Sticker Creator Bot"
+    return "🤖 Telegram Sticker Pack Creator"
 
 if __name__ == '__main__':
-    print("🚀 Starting Real Sticker Creator...")
+    print("🚀 Starting Telegram Sticker Pack Creator...")
     
     # Устанавливаем вебхук
     render_url = os.getenv('RENDER_EXTERNAL_URL')
